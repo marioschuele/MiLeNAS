@@ -301,28 +301,28 @@ def main():
         logging.info('epoch %d lr %e', epoch, lr)
 
         # training
-        train_acc, train_obj, train_loss = train(epoch, train_queue, valid_queue, model, architect, criterion, optimizer, lr)
+        train_acc, train_obj, train_loss, train_rec, train_prec, train_f1score = train(epoch, train_queue, valid_queue, model, architect, criterion, optimizer, lr)
         logging.info('train_acc %f', train_acc)
-        #logging.info('train_f1score %f', train_f1score)
+        logging.info('train_f1score %f', train_f1score)
         if is_wandb_used:
             wandb.log({"searching_train_acc": train_acc, "epoch": epoch})
             wandb.log({"searching_train_loss": train_loss, "epoch": epoch})
-            #wandb.log({"searching_train_f1score": train_f1score, "epoch": epoch})
+            wandb.log({"searching_train_f1score": train_f1score, "epoch": epoch})
         # validation
         with torch.no_grad():
-            valid_acc, valid_obj, valid_loss = infer(valid_queue, model, criterion)
+            valid_acc, valid_obj, valid_loss, valid_f1score, valid_rec, valid_prec = infer(valid_queue, model, criterion)
         logging.info('valid_acc %f', valid_acc)
-        #logging.info('val_f1score %f', valid_f1score)
+        logging.info('val_f1score %f', valid_f1score)
 
         scheduler.step()
 
         if is_wandb_used:
             wandb.log({"searching_valid_acc": valid_acc, "epoch": epoch})
             wandb.log({"searching_valid_loss": valid_loss, "epoch": epoch})
-            #wandb.log({"searching_valid_f1score": valid_f1score, "epoch": epoch})
+            wandb.log({"searching_valid_f1score": valid_f1score, "epoch": epoch})
             wandb.log({"search_train_valid_acc_gap": train_acc - valid_acc, "epoch": epoch})
             wandb.log({"search_train_valid_loss_gap": train_loss - valid_loss, "epoch": epoch})
-            #wandb.log({"search_train_valid_f1score_gap": train_f1score - valid_f1score, "epoch": epoch})
+            wandb.log({"search_train_valid_f1score_gap": train_f1score - valid_f1score, "epoch": epoch})
 
         # save the structure
         genotype, normal_cnn_count, reduce_cnn_count = model.module.genotype() if is_multi_gpu else model.genotype()
@@ -378,6 +378,11 @@ def main():
 def train(epoch, train_queue, valid_queue, model, architect, criterion, optimizer, lr):
     global is_multi_gpu
 
+
+
+    rec = utils.AvgrageMeter()
+    prec = utils.AvgrageMeter()
+    f1 = utils.AvgrageMeter()
     objs = utils.AvgrageMeter()
     top1 = utils.AvgrageMeter()
     top5 = utils.AvgrageMeter()
@@ -432,27 +437,35 @@ def train(epoch, train_queue, valid_queue, model, architect, criterion, optimize
         nn.utils.clip_grad_norm_(parameters, args.grad_clip)
         optimizer.step()
         # logging.info("step %d. update weight by SGD. FINISH\n" % step)
-
-        #f1score = utils.f1_score(logits, target)
+        recall = utils.recall(logits, target)
+        precision = utils.precision(logits, target)
+        f1score = utils.f1_score(logits, target)
         prec1, prec5 = utils.accuracy(logits, target, topk=(1, 5))
         objs.update(loss.item(), n)
         top1.update(prec1.item(), n)
         top5.update(prec5.item(), n)
+        rec.update(recall.item(), n)
+        prec.update(precision.item(), n)
+        f1.update(f1score.item(), n)
 
         # torch.cuda.empty_cache()
 
         if step % args.report_freq == 0:
-            logging.info('train %03d %e %f %f', step, objs.avg, top1.avg, top5.avg)
+            logging.info('train %03d Loss: %e Top1: %f Recall: %f Prec: %f F1: %f', step, objs.avg, top1.avg, rec.avg, prec.avg, f1.avg)
 
-    return top1.avg, objs.avg, loss
+    return top1.avg, objs.avg, loss, rec.avg, prec.avg, f1.avg
 
 
 def infer(valid_queue, model, criterion):
     global is_multi_gpu
 
+    rec = utils.AvgrageMeter()
+    prec = utils.AvgrageMeter()
+    f1 = utils.AvgrageMeter()
     objs = utils.AvgrageMeter()
     top1 = utils.AvgrageMeter()
     top5 = utils.AvgrageMeter()
+    ba = utils.AvgrageMeter()
     model.eval()
 
     for step, (input, target) in enumerate(valid_queue):
@@ -461,17 +474,25 @@ def infer(valid_queue, model, criterion):
 
         logits = model(input)
         loss = criterion(logits, target)
-        #f1score = utils.f1_score(logits, target)
+        
+        recall = utils.recall(logits, target)
+        precision = utils.precision(logits, target)
+        f1score = utils.f1_score(logits, target)
         prec1, prec5 = utils.accuracy(logits, target, topk=(1, 5))
+        binAcc = utils.binary_accuracy(logits, target)
         n = input.size(0)
         objs.update(loss.item(), n)
         top1.update(prec1.item(), n)
         top5.update(prec5.item(), n)
+        rec.update(recall.item(), n)
+        prec.update(precision.item(), n)
+        f1.update(f1score.item(), n)
+        ba.update(binAcc.item(), n)
 
         if step % args.report_freq == 0:
-            logging.info('valid %03d %e %f %f', step, objs.avg, top1.avg, top5.avg)
-
-    return top1.avg, objs.avg, loss
+            logging.info('valid %03d %e %f BinAcc: %f %f %f %f', step, objs.avg, top1.avg, ba.avg, f1.avg, rec.avg, prec.avg)
+        #print('*********** %s', f1.avg)
+    return top1.avg, objs.avg, loss, f1.avg, rec.avg, prec.avg
 
 
 if __name__ == '__main__':

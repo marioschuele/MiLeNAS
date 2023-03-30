@@ -43,61 +43,59 @@ def accuracy(output, target, topk=(1,)):
     batch_size = target.size(0)
 
     _, pred = output.topk(maxk, 1, True, True)
-    print(pred)
     pred = pred.t()
-    print(pred)
     correct = pred.eq(target.view(1, -1).expand_as(pred))
-    print(target.view(1, -1))
+
     res = []
     for k in topk:
         correct_k = correct[:k].contiguous().view(-1).float().sum(0)
         res.append(correct_k.mul_(100.0 / batch_size))
     return res
 
-def f1_score(output, target, topk=(1,)):
-    precisions = precision(output, target, topk)
-    recalls = recall(output, target, topk)
-
-    res = []
-    for i in range(len(topk)):
-        precision_k = precisions[i]
-        recall_k = recalls[i]
-        f1_k = 2 * precision_k * recall_k / (precision_k + recall_k + 1e-20)
-        res.append(f1_k)
-    return res
-
-
-def precision(output, target, topk=(1,)):
-    maxk = min(max(topk), output.size(1))
+def binary_accuracy(output, target):
     batch_size = target.size(0)
 
-    _, pred = output.topk(maxk, 1, True, True)
-    pred = pred.t()
-    correct = pred.eq(target.view(1, -1).expand_as(pred))
+    _, pred = output.max(1)
+    correct = pred.eq(target)
 
-    res = []
-    for k in topk:
-        correct_k = correct[:k].view(-1).float().sum(0)
-        precision_k = correct_k.mul_(100.0 / pred[:k].numel())
-        res.append(precision_k)
-    return res
+    acc = correct.sum().float() / batch_size * 100.0
+    return acc
 
 
-def recall(output, target, topk=(1,)):
-    maxk = min(max(topk), output.size(1))
+def f1_score(output, target):
+    precision_score = precision(output, target)
+    recall_score = recall(output, target)
+
+    f1 = 2 * (precision_score * recall_score) / (precision_score + recall_score + 1e-20)
+    return f1
+
+
+
+
+def precision(output, target):
     batch_size = target.size(0)
 
-    _, pred = output.topk(maxk, 1, True, True)
+    _, pred = output.max(1)
+    correct = pred.eq(target)
+
+    tp = correct.sum().float()
+    correct = correct.float()
+    fp = (1 - correct).sum().float()
+
+    precision = tp.mul_(100.0 / (tp + fp))
+    return precision
+
+
+
+def recall(output, target):
+    _, pred = output.topk(1, 1, True, True)
     pred = pred.t()
     correct = pred.eq(target.view(1, -1).expand_as(pred))
-
-    res = []
-    for k in topk:
-        correct_k = correct[:k].view(-1).float().sum(0)
-        relevant_k = target.ne(0).float().sum(0)
-        recall_k = correct_k.mul_(100.0 / relevant_k)
-        res.append(recall_k)
-    return res
+    correct = correct.float()
+    correct_k = correct.view(-1).float().sum(0)
+    relevant_k = target.ne(0).float().sum(0)
+    recall_1 = correct_k.mul_(100.0 / relevant_k)
+    return recall_1
 
 
 
