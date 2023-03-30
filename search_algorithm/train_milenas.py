@@ -13,6 +13,7 @@ import torch.nn.functional as F
 import torch.utils
 import torchvision.datasets as dset
 import wandb
+import torchvision.transforms as transforms
 
 #Adjustments#
 import pandas as pd
@@ -210,45 +211,26 @@ def main():
     img_df['label'] = img_df['label'].replace(3,2)
     #img_df.loc[img_df.index[(img_df['label']==3)],'label'] = 2
     logging.info("Created data frame, length: %s", len(img_df.index))
-  
+    """
     def _parse_function(filename, label):
         with open(filename, 'rb') as f:
             image = Image.open(f)
             image = image.convert('L')  # convert to grayscale
             image = torch.tensor(np.array(image), dtype=torch.float32)
             image = image.unsqueeze(0)  # add channel dimension as the first dimension
+            image /= 255
+        return image, label
+    """
+
+    def _parse_function(filename, label):
+        with open(filename, 'rb') as f:
+            image = transforms.functional.to_tensor(Image.open(f).convert('L'))
+        image /= 255.0
+        label = torch.tensor(label, dtype=torch.long)
         return image, label
 
-
-    """
-    def _parse_function(filename, label):
-      with open(filename, 'rb') as f:
-        image = Image.open(f)
-        image = image.convert('RGB')
-        image = torch.tensor(np.array(image), dtype=torch.float32)
-        image = image.permute(2, 0, 1)  # move channel dimension to second position
-      return image, label
-    
-    def collect_file_metadata(root_dir):
-      metadata = []
-      uid = 0
-      for dirpath, dirnames, filenames in os.walk(root_dir):
-        subdir = dirpath.split('/')[-2]
-        anomaly_type = int(subdir[-1]) if subdir[-1].isdigit() else None
-        for filename in filenames:
-            label = 0 if 'benign' in dirpath else 1 if anomaly_type == 1 else 3 if anomaly_type == 3 else None
-            file_path = os.path.join(dirpath, filename)
-            metadata.append((uid, label, filename, file_path, anomaly_type))
-            uid += 1
-      df = pd.DataFrame(metadata, columns=['id', 'label', 'fn', 'path', 'anomaly_type'])
-      df['label'] = df['label'].replace(3, 2)
-      return df
-
-    img_df = collect_file_metadata(directory)
-    """
-    
     file_paths = img_df.path
-    file_labels = img_df["label"]
+    file_labels = torch.tensor(img_df["label"].values.reshape(-1, 1), dtype=torch.long)
 
     class SIDDdataset(torch.utils.data.Dataset):
       def __init__(self, file_paths, file_labels):
@@ -339,8 +321,8 @@ def main():
                 break
 
         print("(n:%d,r:%d)" % (normal_cnn_count, reduce_cnn_count))
-        print(F.softmax(model.module.alphas_normal if is_multi_gpu else model.alphas_normal, dim=-1))
-        print(F.softmax(model.module.alphas_reduce if is_multi_gpu else model.alphas_reduce, dim=-1))
+        #print(F.softmax(model.module.alphas_normal if is_multi_gpu else model.alphas_normal, dim=-1))
+        #print(F.softmax(model.module.alphas_reduce if is_multi_gpu else model.alphas_reduce, dim=-1))
         logging.info('search_space.genotype = %s', genotype)
         if is_wandb_used:
             wandb.log({"genotype": str(genotype)}, step=epoch-1)
@@ -349,29 +331,29 @@ def main():
 
             # save the cnn architecture according to the CNN count
             cnn_count = normal_cnn_count*10+reduce_cnn_count
-            wandb.log({"searching_cnn_count(%s)" % cnn_count: valid_acc, "epoch": epoch})
+            wandb.log({"searching_cnn_count(%s)" % cnn_count: valid_f1score, "epoch": epoch})
             if cnn_count not in best_accuracy_different_cnn_counts.keys():
-                best_accuracy_different_cnn_counts[cnn_count] = valid_acc
-                summary_key_cnn_structure = "best_acc_for_cnn_structure(n:%d,r:%d)" % (
+                best_accuracy_different_cnn_counts[cnn_count] = valid_f1score
+                summary_key_cnn_structure = "best_f1_for_cnn_structure(n:%d,r:%d)" % (
                 normal_cnn_count, reduce_cnn_count)
-                wandb.run.summary[summary_key_cnn_structure] = valid_acc
+                wandb.run.summary[summary_key_cnn_structure] = valid_f1score
 
                 summary_key_best_cnn_structure = "epoch_of_best_acc_for_cnn_structure(n:%d,r:%d)" % (
                 normal_cnn_count, reduce_cnn_count)
                 wandb.run.summary[summary_key_best_cnn_structure] = epoch
             else:
-                if valid_acc > best_accuracy_different_cnn_counts[cnn_count]:
-                    best_accuracy_different_cnn_counts[cnn_count] = valid_acc
+                if valid_f1score > best_accuracy_different_cnn_counts[cnn_count]:
+                    best_accuracy_different_cnn_counts[cnn_count] = valid_f1score
                     summary_key_cnn_structure = "best_acc_for_cnn_structure(n:%d,r:%d)" % (normal_cnn_count, reduce_cnn_count)
-                    wandb.run.summary[summary_key_cnn_structure] = valid_acc
+                    wandb.run.summary[summary_key_cnn_structure] = valid_f1score
 
                     summary_key_best_cnn_structure = "epoch_of_best_acc_for_cnn_structure(n:%d,r:%d)" % (normal_cnn_count, reduce_cnn_count)
                     wandb.run.summary[summary_key_best_cnn_structure] = epoch
 
-            if valid_acc > best_accuracy:
-                best_accuracy = valid_acc
-                wandb.run.summary["best_valid_accuracy"] = valid_acc
-                wandb.run.summary["epoch_of_best_accuracy"] = epoch
+            if valid_f1score > best_accuracy:
+                best_accuracy = valid_f1score
+                wandb.run.summary["best_valid_f1score"] = valid_f1score
+                wandb.run.summary["epoch_of_best_f1score"] = epoch
                 utils.save(model, os.path.join(wandb.run.dir, 'weights.pt'))
 
 
