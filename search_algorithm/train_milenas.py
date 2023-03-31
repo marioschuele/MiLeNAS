@@ -42,15 +42,15 @@ parser.add_argument('--report_freq', type=float, default=50, help='report freque
 parser.add_argument('--gpu', type=str, default='0', help='gpu device id')
 parser.add_argument('--epochs', type=int, default=30, help='num of training epochs')
 parser.add_argument('--init_channels', type=int, default=4, help='num of init channels')
-parser.add_argument('--layers', type=int, default=3, help='total number of layers')
+parser.add_argument('--layers', type=int, default=5, help='total number of layers')
 parser.add_argument('--model_path', type=str, default='saved_models', help='path to save the model')
 parser.add_argument('--cutout', action='store_true', default=False, help='use cutout')
 parser.add_argument('--cutout_length', type=int, default=16, help='cutout length')
-parser.add_argument('--drop_path_prob', type=float, default=0.3, help='drop path probability')
+parser.add_argument('--drop_path_prob', type=float, default=0.5, help='drop path probability')
 parser.add_argument('--save', type=str, default='EXP', help='experiment name')
 parser.add_argument('--seed', type=int, default=2, help='random seed')
 parser.add_argument('--grad_clip', type=float, default=5, help='gradient clipping')
-parser.add_argument('--train_portion', type=float, default=0.5, help='portion of training data')
+parser.add_argument('--train_portion', type=float, default=0.8, help='portion of training data')
 parser.add_argument('--unrolled', action='store_true', default=False, help='use one-step unrolled validation loss')
 parser.add_argument('--arch_learning_rate', type=float, default=3e-4, help='learning rate for arch encoding')
 parser.add_argument('--arch_weight_decay', type=float, default=1e-3, help='weight decay for arch encoding')
@@ -89,6 +89,93 @@ is_multi_gpu = False
 
 is_wandb_used = True
 
+def _parse_function(filename, label):
+    with open(filename, 'rb') as f:
+        image = transforms.functional.to_tensor(Image.open(f).convert('L'))
+    image /= 255.0
+    label = torch.tensor(label, dtype=torch.long)
+    return image, label
+
+def get_SIDD_data():
+    #For testing purposes
+    directory = 'SIDD'
+
+    imgs = {}
+    uid = 0
+    label_counts = {0: 0, 1: 0}
+
+    for client in os.listdir(directory):
+        curr_path = f'{directory}/{client}/pcap'
+
+        for subdir in os.listdir(curr_path):
+            curr_path = f'{directory}/{client}/pcap/{subdir}/dataset'
+            curr_type = subdir[-1:]
+            if curr_type == str(1):
+                for dayscen in os.listdir(curr_path):
+                    curr_path = f'{directory}/{client}/pcap/{subdir}/dataset/{dayscen}'
+                    for i, img in enumerate(os.listdir(curr_path)):
+                        #if i == 20:
+                        #   break
+                        if dayscen == 'benign':
+                            label = 0
+                        elif dayscen == 'malicious':
+                            label = 1
+                        imgs[uid] = {'id': uid, 'label': str(label), 'fn': img, 'path': curr_path + '/' + img}
+                        uid += 1
+                        label_counts[label] += 1
+
+    total = label_counts[1] + label_counts[0]
+    neg = label_counts[0]
+    pos = label_counts[1]
+
+    weight_for_0 = (1 / neg) * (total / 2.0)
+    weight_for_1 = (1 / pos) * (total / 2.0)
+
+
+    class_weight = torch.tensor([weight_for_0, weight_for_1], dtype=torch.float32)
+    #class_weight = {0: weight_for_0, 1: weight_for_1}
+    #class_weight = torch.FloatTensor([class_weight[i] for i in range(len(class_weight))])
+
+    print(label_counts)
+    print(label_counts[1] / label_counts[0] * 100)
+    
+    img_df = pd.DataFrame.from_dict(imgs,orient='index')
+    img_df['label'] = img_df['label'].astype(int)
+    img_df['label'] = img_df['label'].replace(3,2)
+    logging.info("Created data frame, length: %s", len(img_df.index))
+    """
+    def _parse_function(filename, label):
+        with open(filename, 'rb') as f:
+            image = Image.open(f)
+            image = image.convert('L')  # convert to grayscale
+            image = torch.tensor(np.array(image), dtype=torch.float32)
+            image = image.unsqueeze(0)  # add channel dimension as the first dimension
+            image /= 255
+        return image, label
+    """
+
+
+    file_paths = img_df.path
+    file_labels = torch.tensor(img_df["label"].values.reshape(-1, 1), dtype=torch.long)
+
+    class SIDDdataset(torch.utils.data.Dataset):
+      def __init__(self, file_paths, file_labels):
+        self.file_paths = file_paths
+        self.file_labels = file_labels
+        
+      def __len__(self):
+        return len(self.file_paths)
+    
+      def __getitem__(self, idx):
+        filename = self.file_paths[idx]
+        label = self.file_labels[idx]
+        image, label = _parse_function(filename, label)
+        return image, label
+
+    train_data = SIDDdataset(file_paths=file_paths,file_labels=file_labels)
+    logging.info("Created dataset")
+
+    return train_data, class_weight
 
 def main():
     if is_wandb_used:
@@ -117,8 +204,12 @@ def main():
     logging.info('gpu device = %s' % args.gpu)
     logging.info("args = %s", args)
 
-    criterion = nn.CrossEntropyLoss()
+    train_data, class_weight = get_SIDD_data()
+
+
+    criterion = nn.CrossEntropyLoss(weight=class_weight)
     criterion = criterion.cuda()
+
 
     # default: args.init_channels = 16, CIFAR_CLASSES = 10, args.layers = 8
     if args.arch_search_method == "DARTS":
@@ -160,97 +251,10 @@ def main():
 
     train_transform, valid_transform = utils._data_transforms_cifar10(args)
 
-    directory = 'SIDD'
-    uid = 0
-    imgs = {}
-    """
-    for client in os.listdir(directory):
-      curr_path = f'{directory}/{client}/pcap'
-      logging.info("Client structure identified")
-      for subdir in os.listdir(curr_path):
-        curr_path = f'{directory}/{client}/pcap/{subdir}/dataset'
-        curr_type = subdir[-1:]
-   
-        for dayscen in os.listdir(curr_path):
-          curr_path = f'{directory}/{client}/pcap/{subdir}/dataset/{dayscen}'
-          logging.info("Iterate days: %s", dayscen)
-          for img in os.listdir(curr_path):
-            #logging.info("Add images to df")
-            if dayscen == 'benign':
-              imgs[uid] = {'id': uid, 'label': str(0), 'fn': img, 'path': curr_path + '/' + img}
-            elif dayscen == 'malicious':
-              imgs[uid] = {'id': uid, 'label': str(curr_type), 'fn': img, 'path': curr_path + '/' + img}
-            uid +=1
-    
-    """
-    #For testing purposes
-    for client in os.listdir(directory):
-      
-      curr_path = f'{directory}/{client}/pcap'
-      logging.info("Client structure identified")
-      for subdir in os.listdir(curr_path):
-
-        curr_path = f'{directory}/{client}/pcap/{subdir}/dataset'
-        curr_type = subdir[-1:]
-        if curr_type == str(1):
-
-          for dayscen in os.listdir(curr_path):
-            curr_path = f'{directory}/{client}/pcap/{subdir}/dataset/{dayscen}'
-
-            for i, img in enumerate(os.listdir(curr_path)):
-              if i == 30:
-                break
-              if dayscen == 'benign':
-                imgs[uid] = {'id': uid, 'label': str(0), 'fn': img, 'path': curr_path + '/' + img}
-              elif dayscen == 'malicious':
-                imgs[uid] = {'id': uid, 'label': str(curr_type), 'fn': img, 'path': curr_path + '/' + img}
-              uid +=1
-    
-    img_df = pd.DataFrame.from_dict(imgs,orient='index')
-    img_df['label'] = img_df['label'].astype(int)
-    img_df['label'] = img_df['label'].replace(3,2)
-    #img_df.loc[img_df.index[(img_df['label']==3)],'label'] = 2
-    logging.info("Created data frame, length: %s", len(img_df.index))
-    """
-    def _parse_function(filename, label):
-        with open(filename, 'rb') as f:
-            image = Image.open(f)
-            image = image.convert('L')  # convert to grayscale
-            image = torch.tensor(np.array(image), dtype=torch.float32)
-            image = image.unsqueeze(0)  # add channel dimension as the first dimension
-            image /= 255
-        return image, label
-    """
-
-    def _parse_function(filename, label):
-        with open(filename, 'rb') as f:
-            image = transforms.functional.to_tensor(Image.open(f).convert('L'))
-        image /= 255.0
-        label = torch.tensor(label, dtype=torch.long)
-        return image, label
-
-    file_paths = img_df.path
-    file_labels = torch.tensor(img_df["label"].values.reshape(-1, 1), dtype=torch.long)
-
-    class SIDDdataset(torch.utils.data.Dataset):
-      def __init__(self, file_paths, file_labels):
-        self.file_paths = file_paths
-        self.file_labels = file_labels
-        
-      def __len__(self):
-        return len(self.file_paths)
-    
-      def __getitem__(self, idx):
-        filename = self.file_paths[idx]
-        label = self.file_labels[idx]
-        image, label = _parse_function(filename, label)
-        return image, label
-
-    train_data = SIDDdataset(file_paths=file_paths,file_labels=file_labels)
-    logging.info("Created dataset")
-
     # will cost time to download the data
     #train_data = dset.CIFAR10(root=args.data, train=True, download=True, transform=train_transform)
+
+    
 
     num_train = len(train_data)
     indices = list(range(num_train))
