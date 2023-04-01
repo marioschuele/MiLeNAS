@@ -19,7 +19,6 @@ import torchvision.transforms as transforms
 import pandas as pd
 from PIL import Image
 from torch.utils.data import Dataset
-from torchmetrics.classification import BinaryRecall
 ####
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.getcwd(), "./")))
@@ -89,13 +88,24 @@ lambda_valid_regularizer = args.lambda_valid_regularizer
 is_multi_gpu = False
 
 is_wandb_used = True
-
+"""
 def _parse_function(filename, label):
     with open(filename, 'rb') as f:
         image = transforms.functional.to_tensor(Image.open(f).convert('L'))
     image /= 255.0
-    label = torch.tensor(label, dtype=torch.long)
+    #label = torch.tensor(label, dtype=torch.long)
     return image, label
+
+    """
+def _parse_function(filename, label):
+      with open(filename, 'rb') as f:
+            image = Image.open(f)
+            image = image.convert('L')  # convert to grayscale
+            image = torch.tensor(np.array(image), dtype=torch.float32)
+            image = image.unsqueeze(0)  # add channel dimension as the first dimension
+            image /= 255
+      return image, label
+    
 
 def get_SIDD_data():
     #For testing purposes
@@ -132,9 +142,9 @@ def get_SIDD_data():
     weight_for_0 = (1 / neg) * (total / 2.0)
     weight_for_1 = (1 / pos) * (total / 2.0)
 
-
-    class_weight = [weight_for_0, weight_for_1]
-    class_weight = torch.FloatTensor(class_weight).cuda()
+    print("W0: %f", weight_for_0)
+    print("W1: %f", weight_for_1)
+    class_weight = torch.tensor([weight_for_0, weight_for_1], dtype=torch.float32)
     #class_weight = {0: weight_for_0, 1: weight_for_1}
     #class_weight = torch.FloatTensor([class_weight[i] for i in range(len(class_weight))])
 
@@ -143,22 +153,14 @@ def get_SIDD_data():
     
     img_df = pd.DataFrame.from_dict(imgs,orient='index')
     img_df['label'] = img_df['label'].astype(int)
-    img_df['label'] = img_df['label'].replace(3,2)
+    #img_df['label'] = img_df['label'].replace(3,2)
     logging.info("Created data frame, length: %s", len(img_df.index))
-    """
-    def _parse_function(filename, label):
-        with open(filename, 'rb') as f:
-            image = Image.open(f)
-            image = image.convert('L')  # convert to grayscale
-            image = torch.tensor(np.array(image), dtype=torch.float32)
-            image = image.unsqueeze(0)  # add channel dimension as the first dimension
-            image /= 255
-        return image, label
-    """
+
 
 
     file_paths = img_df.path
-    file_labels = img_df["label"]
+    file_labels = img_df["label"].values.reshape(-1, 1)
+    #file_labels = torch.tensor(img_df["label"].values.reshape(-1, 1), dtype=torch.long)
 
     class SIDDdataset(torch.utils.data.Dataset):
       def __init__(self, file_paths, file_labels):
@@ -209,7 +211,8 @@ def main():
     train_data, class_weight = get_SIDD_data()
 
 
-    criterion = nn.CrossEntropyLoss(weight=class_weight)
+    #criterion = nn.BCELoss(weight = class_weight)
+    criterion = nn.CrossEntropyLoss()
     criterion = criterion.cuda()
 
 
@@ -247,7 +250,7 @@ def main():
         weight_decay=args.weight_decay)
     """
     optimizer = torch.optim.Adam(
-        weight_params,  # model.parameters(),
+        weight_params, #model.parameters(),
         args.learning_rate,
         weight_decay=args.weight_decay)
 
@@ -425,8 +428,7 @@ def train(epoch, train_queue, valid_queue, model, architect, criterion, optimize
         nn.utils.clip_grad_norm_(parameters, args.grad_clip)
         optimizer.step()
         # logging.info("step %d. update weight by SGD. FINISH\n" % step)
-        #recall = utils.recall(logits, target)
-        recall = BinaryRecall(logits, target)
+        recall = utils.recall(logits, target)
         precision = utils.precision(logits, target)
         f1score = utils.f1_score(logits, target)
         prec1, prec5 = utils.accuracy(logits, target, topk=(1, 5))
