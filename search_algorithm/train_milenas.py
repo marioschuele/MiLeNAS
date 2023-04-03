@@ -19,7 +19,7 @@ import torchvision.transforms as transforms
 import pandas as pd
 from PIL import Image
 from torch.utils.data import Dataset
-from torchmetrics.classification import BinaryRecall
+from torchmetrics.classification import BinaryRecall, MulticlassRecall, MulticlassPrecision
 ####
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.getcwd(), "./")))
@@ -278,8 +278,8 @@ def main():
 
     architect = Architect(model, criterion, args)
 
-    best_accuracy = 0
-    best_accuracy_different_cnn_counts = dict()
+    best_recall = 0
+    best_recall_different_cnn_counts = dict()
 
     if is_wandb_used:
         table = wandb.Table(columns=["Epoch", "Searched Architecture"])
@@ -291,26 +291,27 @@ def main():
         # training
         train_acc, train_obj, train_loss, train_rec, train_prec, train_f1score = train(epoch, train_queue, valid_queue, model, architect, criterion, optimizer, lr)
         logging.info('train_acc %f', train_acc)
-        logging.info('train_f1score %f', train_f1score)
+        logging.info('train_recall %f', train_rec)
+        
         if is_wandb_used:
             wandb.log({"searching_train_acc": train_acc, "epoch": epoch})
             wandb.log({"searching_train_loss": train_loss, "epoch": epoch})
-            wandb.log({"searching_train_f1score": train_f1score, "epoch": epoch})
+            wandb.log({"searching_train_recall": train_rec, "epoch": epoch})
         # validation
         with torch.no_grad():
             valid_acc, valid_obj, valid_loss, valid_f1score, valid_rec, valid_prec = infer(valid_queue, model, criterion)
         logging.info('valid_acc %f', valid_acc)
-        logging.info('val_f1score %f', valid_f1score)
+        logging.info('val_recall %f', valid_rec)
 
         scheduler.step()
 
         if is_wandb_used:
             wandb.log({"searching_valid_acc": valid_acc, "epoch": epoch})
             wandb.log({"searching_valid_loss": valid_loss, "epoch": epoch})
-            wandb.log({"searching_valid_f1score": valid_f1score, "epoch": epoch})
+            wandb.log({"searching_valid_recall": valid_rec, "epoch": epoch})
             wandb.log({"search_train_valid_acc_gap": train_acc - valid_acc, "epoch": epoch})
             wandb.log({"search_train_valid_loss_gap": train_loss - valid_loss, "epoch": epoch})
-            wandb.log({"search_train_valid_f1score_gap": train_f1score - valid_f1score, "epoch": epoch})
+            wandb.log({"search_train_valid_recall_gap": train_rec - valid_rec, "epoch": epoch})
 
         # save the structure
         genotype, normal_cnn_count, reduce_cnn_count = model.module.genotype() if is_multi_gpu else model.genotype()
@@ -337,29 +338,29 @@ def main():
 
             # save the cnn architecture according to the CNN count
             cnn_count = normal_cnn_count*10+reduce_cnn_count
-            wandb.log({"searching_cnn_count(%s)" % cnn_count: valid_f1score, "epoch": epoch})
-            if cnn_count not in best_accuracy_different_cnn_counts.keys():
-                best_accuracy_different_cnn_counts[cnn_count] = valid_f1score
-                summary_key_cnn_structure = "best_f1_for_cnn_structure(n:%d,r:%d)" % (
+            wandb.log({"searching_cnn_count(%s)" % cnn_count: valid_rec, "epoch": epoch})
+            if cnn_count not in best_recall_different_cnn_counts.keys():
+                best_recall_different_cnn_counts[cnn_count] = valid_rec
+                summary_key_cnn_structure = "best_recall_for_cnn_structure(n:%d,r:%d)" % (
                 normal_cnn_count, reduce_cnn_count)
-                wandb.run.summary[summary_key_cnn_structure] = valid_f1score
+                wandb.run.summary[summary_key_cnn_structure] = valid_rec
 
-                summary_key_best_cnn_structure = "epoch_of_best_acc_for_cnn_structure(n:%d,r:%d)" % (
+                summary_key_best_cnn_structure = "epoch_of_best_recall_for_cnn_structure(n:%d,r:%d)" % (
                 normal_cnn_count, reduce_cnn_count)
                 wandb.run.summary[summary_key_best_cnn_structure] = epoch
             else:
-                if valid_f1score > best_accuracy_different_cnn_counts[cnn_count]:
-                    best_accuracy_different_cnn_counts[cnn_count] = valid_f1score
-                    summary_key_cnn_structure = "best_acc_for_cnn_structure(n:%d,r:%d)" % (normal_cnn_count, reduce_cnn_count)
-                    wandb.run.summary[summary_key_cnn_structure] = valid_f1score
+                if valid_rec > best_recall_different_cnn_counts[cnn_count]:
+                    best_recall_different_cnn_counts[cnn_count] = valid_rec
+                    summary_key_cnn_structure = "best_recall_for_cnn_structure(n:%d,r:%d)" % (normal_cnn_count, reduce_cnn_count)
+                    wandb.run.summary[summary_key_cnn_structure] = valid_rec
 
-                    summary_key_best_cnn_structure = "epoch_of_best_acc_for_cnn_structure(n:%d,r:%d)" % (normal_cnn_count, reduce_cnn_count)
+                    summary_key_best_cnn_structure = "epoch_of_best_recall_for_cnn_structure(n:%d,r:%d)" % (normal_cnn_count, reduce_cnn_count)
                     wandb.run.summary[summary_key_best_cnn_structure] = epoch
 
-            if valid_f1score > best_accuracy:
-                best_accuracy = valid_f1score
-                wandb.run.summary["best_valid_f1score"] = valid_f1score
-                wandb.run.summary["epoch_of_best_f1score"] = epoch
+            if valid_rec > best_recall:
+                best_recall = valid_rec
+                wandb.run.summary["best_valid_recall"] = valid_rec
+                wandb.run.summary["epoch_of_best_recall"] = epoch
                 utils.save(model, os.path.join(wandb.run.dir, 'weights.pt'))
 
 
@@ -425,17 +426,21 @@ def train(epoch, train_queue, valid_queue, model, architect, criterion, optimize
         nn.utils.clip_grad_norm_(parameters, args.grad_clip)
         optimizer.step()
         # logging.info("step %d. update weight by SGD. FINISH\n" % step)
-        #recall = utils.recall(logits, target)
-        recall = BinaryRecall(logits, target)
-        precision = utils.precision(logits, target)
-        f1score = utils.f1_score(logits, target)
+
+        recall_met = MulticlassRecall(num_classes = 2)
+        recall_met.cuda()
+        recall = recall_met(logits, target)
+        precision_met = MulticlassPrecision(num_classes = 2)
+        precision_met.cuda()
+        precision = precision_met(logits, target)
+        f1_score = 2 * precision * recall / (precision + recall + 0.000001)
         prec1, prec5 = utils.accuracy(logits, target, topk=(1, 5))
         objs.update(loss.item(), n)
         top1.update(prec1.item(), n)
         top5.update(prec5.item(), n)
         rec.update(recall.item(), n)
         prec.update(precision.item(), n)
-        f1.update(f1score.item(), n)
+        f1.update(f1_score.item(), n)
 
         # torch.cuda.empty_cache()
 
@@ -464,9 +469,13 @@ def infer(valid_queue, model, criterion):
         logits = model(input)
         loss = criterion(logits, target)
         
-        recall = utils.recall(logits, target)
-        precision = utils.precision(logits, target)
-        f1score = utils.f1_score(logits, target)
+        recall_met = MulticlassRecall(num_classes = 2)
+        recall_met.cuda()
+        recall = recall_met(logits, target)
+        precision_met = MulticlassPrecision(num_classes = 2)
+        precision_met.cuda()
+        precision = precision_met(logits, target)
+        f1_score = 2 * precision * recall / (precision + recall + 0.000001)
         prec1, prec5 = utils.accuracy(logits, target, topk=(1, 5))
         binAcc = utils.binary_accuracy(logits, target)
         n = input.size(0)
@@ -475,11 +484,11 @@ def infer(valid_queue, model, criterion):
         top5.update(prec5.item(), n)
         rec.update(recall.item(), n)
         prec.update(precision.item(), n)
-        f1.update(f1score.item(), n)
+        f1.update(f1_score.item(), n)
         ba.update(binAcc.item(), n)
 
         if step % args.report_freq == 0:
-            logging.info('valid %03d %e %f BinAcc: %f %f %f %f', step, objs.avg, top1.avg, ba.avg, f1.avg, rec.avg, prec.avg)
+            logging.info('valid %03d %e %f  %f Recall: %f %f', step, objs.avg, top1.avg, f1.avg, rec.avg, prec.avg)
         #print('*********** %s', f1.avg)
     return top1.avg, objs.avg, loss, f1.avg, rec.avg, prec.avg
 
