@@ -98,7 +98,7 @@ def _parse_function(filename, label):
     return image, label
 
 def get_SIDD_data():
-    #For testing purposes
+
     directory = 'SIDD'
 
     imgs = {}
@@ -115,8 +115,8 @@ def get_SIDD_data():
                 for dayscen in os.listdir(curr_path):
                     curr_path = f'{directory}/{client}/pcap/{subdir}/dataset/{dayscen}'
                     for i, img in enumerate(os.listdir(curr_path)):
-                        #if i == 20:
-                        #   break
+                        if i == 45:
+                           break
                         if dayscen == 'benign':
                             label = 0
                         elif dayscen == 'malicious':
@@ -209,7 +209,7 @@ def main():
     train_data, class_weight = get_SIDD_data()
 
 
-    criterion = nn.CrossEntropyLoss(weight=class_weight)
+    criterion = nn.CrossEntropyLoss()
     criterion = criterion.cuda()
 
 
